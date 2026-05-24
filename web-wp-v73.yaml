@@ -1,0 +1,281 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFormation para WordPress en dos instancias EC2.
+  VPC 10.10.0.0/16, Subnet publica 10.10.10.0/24, Subnet privada 10.10.20.0/24.
+
+Resources:
+  CustomVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: WordPressVPC
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CustomVPC
+      CidrBlock: 10.10.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicaSubnet
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CustomVPC
+      CidrBlock: 10.10.20.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: PrivadaSubnet
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref CustomVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomVPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  EIPForNAT:
+    Type: AWS::EC2::EIP
+    DependsOn: AttachGateway
+    Properties:
+      Domain: vpc
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt EIPForNAT.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: NATGateway
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomVPC
+      Tags:
+        - Key: Name
+          Value: PrivateRouteTable
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn: NATGateway
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  WebSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Seguridad para servidor web
+      VpcId: !Ref CustomVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP
+      Tags:
+        - Key: Name
+          Value: WebSecurityGroup
+
+  DbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Seguridad para servidor de base de datos
+      VpcId: !Ref CustomVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref WebSecurityGroup
+          Description: MySQL desde el servidor web
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          SourceSecurityGroupId: !Ref WebSecurityGroup
+          Description: ssh desde el servidor web
+      Tags:
+        - Key: Name
+          Value: DbSecurityGroup
+
+  WebServer:
+    Type: AWS::EC2::Instance
+    DependsOn: DbServer
+    Properties:
+      InstanceType: t2.micro
+      KeyName: vockey
+      ImageId: ami-04b4f1a9cf54c11d0
+      SubnetId: !Ref PublicSubnet
+      PrivateIpAddress: 10.10.10.10
+      SecurityGroupIds:
+        - !Ref WebSecurityGroup
+      Tags:
+        - Key: Name
+          Value: servidor-web
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash -xe
+          set -e
+          apt update -y
+          DEBIAN_FRONTEND=noninteractive apt install -y \
+            apache2 \
+            php \
+            php-mysql \
+            libapache2-mod-php \
+            php-xml \
+            php-curl \
+            php-gd \
+            php-mbstring \
+            php-zip \
+            php-intl \
+            php-soap \
+            php-cli \
+            unzip \
+            wget \
+            curl \
+            netcat-openbsd \
+            mysql-client
+          a2enmod rewrite
+          a2enmod headers
+          systemctl enable apache2
+          systemctl start apache2
+          # Descarga e instalación de WordPress
+          cd /var/www/html
+          rm -f index.html
+          wget https://wordpress.org/latest.tar.gz
+          tar -xzf latest.tar.gz --strip-components=1
+          rm latest.tar.gz
+          # Crear wp-config.php desde el ejemplo
+          cp wp-config-sample.php wp-config.php
+          # Configurar credenciales de Base de Datos (Tus datos específicos)
+          sed -i "s/database_name_here/wordpress/" wp-config.php
+          sed -i "s/username_here/paco/" wp-config.php
+          sed -i "s/password_here/1234/" wp-config.php
+          sed -i "s/localhost/10.10.20.20/" wp-config.php
+          # Inyectar Security Salts reales desde la API de WordPress
+          # Borramos las líneas de ejemplo y añadimos las reales
+          sed -i '/AUTH_KEY/,/NONCE_SALT/d' wp-config.php
+          curl -s https://api.wordpress.org/secret-key/1.1/salt/ >> wp-config.php
+
+          # Ajustar permisos para que el servidor web pueda leerlo pero no borrarlo
+          chown -R www-data:www-data /var/www/html
+          find /var/www/html -type d -exec chmod 755 {} \;
+          find /var/www/html -type f -exec chmod 644 {} \;
+          chmod 640 /var/www/html/wp-config.php
+          systemctl restart apache2
+
+  DbServer:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - PrivateRoute
+      - PrivateSubnetRouteTableAssociation
+    Properties:
+      InstanceType: t2.micro
+      KeyName: vockey
+      ImageId: ami-04b4f1a9cf54c11d0
+      SubnetId: !Ref PrivateSubnet
+      PrivateIpAddress: 10.10.20.20
+      SecurityGroupIds:
+        - !Ref DbSecurityGroup
+      Tags:
+        - Key: Name
+          Value: servidor-db
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash -xe
+          set -e
+          apt update -y
+          DEBIAN_FRONTEND=noninteractive sudo apt install mariadb-server -y
+          sudo sed -i "s/bind-address.*/bind-address = 0.0.0.0/" /etc/mysql/mariadb.conf.d/50-server.cnf
+          systemctl enable mariadb
+          systemctl start mariadb
+          mysql -u root <<EOF
+          CREATE DATABASE IF NOT EXISTS wordpress DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+          CREATE USER IF NOT EXISTS 'paco'@'%' IDENTIFIED BY '1234';
+          GRANT ALL PRIVILEGES ON wordpress.* TO 'paco'@'%';
+          ALTER USER 'root'@'localhost' IDENTIFIED BY '1234';
+          FLUSH PRIVILEGES;
+          EOF
+          systemctl restart mariadb
+Outputs:
+  VPCId:
+    Description: ID de la VPC creada
+    Value: !Ref CustomVPC
+
+  PublicSubnetId:
+    Description: ID de la subnet pública
+    Value: !Ref PublicSubnet
+
+  PrivateSubnetId:
+    Description: ID de la subnet privada
+    Value: !Ref PrivateSubnet
+
+  WebPrivateIP:
+    Description: IP privada del servidor web
+    Value: !GetAtt WebServer.PrivateIp
+
+  WebPublicIP:
+    Description: IP pública del servidor web
+    Value: !GetAtt WebServer.PublicIp
+
+  DbPrivateIP:
+    Description: IP privada del servidor db
+    Value: !GetAtt DbServer.PrivateIp
+
+  WebInstanceId:
+    Description: ID de la instancia servidor-web
+    Value: !Ref WebServer
+
+  DbInstanceId:
+    Description: ID de la instancia servidor-db
+    Value: !Ref DbServer
