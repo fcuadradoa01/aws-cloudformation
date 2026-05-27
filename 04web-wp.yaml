@@ -1,0 +1,217 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Plantilla CloudFormation para desplegar WordPress en EC2.
+  VPC: 10.10.0.0/16, Subnet: 10.10.10.0/24, EC2: 10.10.10.10
+  Incluye Apache, PHP, MariaDB y WordPress última versión.
+
+Resources:
+  # VPC
+  CustomVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.10.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: CustomVPC
+
+  # Subnet Pública
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref CustomVPC
+      CidrBlock: 10.10.10.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: IGW
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref CustomVPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref CustomVPC
+      Tags:
+        - Key: Name
+          Value: PublicRouteTable
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Group - Solo puertos 22 (SSH) y 80 (HTTP)
+  WordPressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permite SSH y HTTP hacia la instancia WordPress.
+      VpcId: !Ref CustomVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP
+      Tags:
+        - Key: Name
+          Value: WordPressSecurityGroup
+
+  # Network Interface con IP privada 10.10.10.10
+  WordPressNetworkInterface:
+    Type: AWS::EC2::NetworkInterface
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      PrivateIpAddress: 10.10.10.10
+      GroupSet:
+        - !Ref WordPressSecurityGroup
+      Tags:
+        - Key: Name
+          Value: WordPressNetworkInterface
+
+  # EC2 Instance
+  WordPressInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: PublicRoute
+    Properties:
+      InstanceType: t2.micro
+      KeyName: vockey
+      ImageId: ami-04b4f1a9cf54c11d0
+      NetworkInterfaces:
+        - NetworkInterfaceId: !Ref WordPressNetworkInterface
+          DeviceIndex: 0
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp3
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash -xe
+          set -e
+          
+          # Actualizar sistema
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get upgrade -y
+          
+          # Instalar dependencias
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            apache2 \
+            mariadb-server \
+            php \
+            php-mysql \
+            libapache2-mod-php \
+            php-xml \
+            php-curl \
+            php-gd \
+            php-mbstring \
+            php-zip \
+            php-intl \
+            php-soap \
+            php-cli \
+            unzip \
+            wget \
+            curl
+          
+          # Habilitar módulos de Apache
+          a2enmod rewrite
+          a2enmod headers
+          
+          # Iniciar servicios
+          systemctl enable apache2
+          systemctl enable mariadb
+          systemctl start apache2
+          systemctl start mariadb
+          
+          # Configurar MariaDB
+          mysql -u root <<'MYSQL_SCRIPT'
+          ALTER USER 'root'@'localhost' IDENTIFIED BY '1234';
+          FLUSH PRIVILEGES;
+          CREATE DATABASE wordpress DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+          CREATE USER 'paco'@'localhost' IDENTIFIED BY '1234';
+          GRANT ALL PRIVILEGES ON wordpress.* TO 'paco'@'localhost';
+          FLUSH PRIVILEGES;
+          MYSQL_SCRIPT
+          
+          # Descargar e instalar WordPress
+          cd /var/www/html
+          rm -f index.html
+          wget https://wordpress.org/latest.tar.gz
+          tar -xzf latest.tar.gz
+          mv wordpress/* .
+          rm -rf wordpress latest.tar.gz
+          chown -R www-data:www-data /var/www/html
+          chmod -R 755 /var/www/html
+                    
+          # Configurar permisos correctos
+          chown -R www-data:www-data /var/www/html/wp-config.php
+          chmod 640 /var/www/html/wp-config.php
+          
+          # Reiniciar Apache
+          systemctl restart apache2
+          
+          # Log de finalización
+          echo "WordPress instalado exitosamente" >> /var/log/wordpress-install.log
+
+Outputs:
+  InstanceId:
+    Description: ID de la instancia EC2
+    Value: !Ref WordPressInstance
+
+  PrivateIP:
+    Description: IP privada de la instancia (10.10.10.10)
+    Value: !GetAtt WordPressInstance.PrivateIp
+
+  PublicIP:
+    Description: IP pública asignada a la instancia
+    Value: !GetAtt WordPressInstance.PublicIp
+
+  WebsiteURL:
+    Description: URL para acceder a WordPress
+    Value: !Sub 'http://${WordPressInstance.PublicIp}/'
+
+  VPCId:
+    Description: ID de la VPC creada
+    Value: !Ref CustomVPC
+
+  SubnetId:
+    Description: ID de la Subnet pública
+    Value: !Ref PublicSubnet
+
+  SecurityGroupId:
+    Description: ID del Security Group
+    Value: !Ref WordPressSecurityGroup
+
+  DatabaseInfo:
+    Description: Información de la base de datos
+    Value: 'BD: wordpress | Usuario: paco | Contraseña: 1234 | Root: 1234'

@@ -1,0 +1,165 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Infraestructura básica con VPC, subred pública y privada,
+  dos instancias EC2 (Windows (subred publica) y Ubuntu (subred privada)),
+  Internet Gateway, tabla de rutas y grupos de seguridad.
+
+Resources:
+  # 1. VPC principal
+  cuasVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.30.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: cuasVPC
+
+  # 2. Internet Gateway para acceso a Internet
+  cuasIGW:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: cuasIGW
+
+  # 3. Asociación del IGW a la VPC
+  cuasAttachIGW:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref cuasVPC
+      InternetGatewayId: !Ref cuasIGW
+
+  # 4. Subred publica
+  cuasRedPublica:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref cuasVPC
+      CidrBlock: 10.30.10.0/24
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: cuasRedPublica
+
+  # 5. Tabla de rutas para la subred publica
+  cuasPublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref cuasVPC
+      Tags:
+        - Key: Name
+          Value: cuasPublicRouteTable
+
+  # 6. Ruta por defecto a Internet en la tabla de rutas pública
+  cuasPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: cuasAttachIGW
+    Properties:
+      RouteTableId: !Ref cuasPublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref cuasIGW
+
+  # 7. Asociación de la tabla de rutas publica a la subred publica
+  cuasPublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref cuasRedPublica
+      RouteTableId: !Ref cuasPublicRouteTable
+
+  # 8. Subred privada
+  cuasRedPrivada:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref cuasVPC
+      CidrBlock: 10.30.20.0/24
+      AvailabilityZone: us-east-1a
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: cuasRedPrivada
+
+  # 9. Grupo de seguridad para la instancia Windows (permite RDP y ping)
+  cuasWinSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permite RDP (puerto 3389) y ping (ICMP) desde cualquier lugar
+      VpcId: !Ref cuasVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3389
+          ToPort: 3389
+          CidrIp: 0.0.0.0/0   # ¡En producción, restringe esto!
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: cuasWinSG
+
+  # 10. Grupo de seguridad para la instancia Ubuntu (permite SSH solo desde la subred pública)
+  cuasUbuntuSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permite SSH puerto 22 solo desde la subred publica y ping
+      VpcId: !Ref cuasVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.30.10.0/24
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 10.30.10.0/24
+      Tags:
+        - Key: Name
+          Value: cuasUbuntuSG
+
+  # 11. Instancia EC2 Windows en la subred publica. AMI funciona en us-east-1a
+  cuasWin2025:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-06d4892cdcf1d2cf7
+      InstanceType: t3.small
+      KeyName: vockey
+      SubnetId: !Ref cuasRedPublica
+      SecurityGroupIds:
+        - !Ref cuasWinSG
+      Tags:
+        - Key: Name
+          Value: cuasWin2025
+
+  # 12. Instancia EC2 Ubuntu en la subred privada
+  cuasUbuntu:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-04b4f1a9cf54c11d0
+      InstanceType: t2.micro
+      KeyName: vockey
+      SubnetId: !Ref cuasRedPrivada
+      SecurityGroupIds:
+        - !Ref cuasUbuntuSG
+      Tags:
+        - Key: Name
+          Value: cuasUbuntu
+
+Outputs:
+  VPCId:
+    Description: ID de la VPC creada
+    Value: !Ref cuasVPC
+  PublicSubnetId:
+    Description: ID de la subred pública
+    Value: !Ref cuasRedPublica
+  PrivateSubnetId:
+    Description: ID de la subred privada
+    Value: !Ref cuasRedPrivada
+  WindowsInstanceId:
+    Description: ID de la instancia Windows
+    Value: !Ref cuasWin2025
+  UbuntuInstanceId:
+    Description: ID de la instancia Ubuntu
+    Value: !Ref cuasUbuntu
