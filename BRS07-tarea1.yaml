@@ -146,7 +146,34 @@ Resources:
         - Key: Name
           Value: cuasWinSG
 
-  # 15. Grupo de seguridad para la instancia Ubuntu (permite SSH solo desde la subred pública)
+  # 15. Grupo de seguridad para la instancia Ubuntu cliente2 en la subred pública
+  cuasUbuntuClient2SG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Permite SSH y acceso HTTP/HTTPS desde Internet para cliente2
+      VpcId: !Ref cuasVPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: icmp
+          FromPort: -1
+          ToPort: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: cuasUbuntuClient2SG
+
+  # 16. Grupo de seguridad para la instancia Ubuntu privada (permite SSH solo desde la subred pública)
   cuasUbuntuSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -165,7 +192,27 @@ Resources:
         - Key: Name
           Value: cuasUbuntuSG
 
-  # 16. Instancia EC2 Windows en la subred publica. AMI funciona en us-east-1a
+  # 17. Instancia EC2 Ubuntu cliente2 en la subred pública con curl instalado
+  cuasUbuntuCliente2:
+    Type: AWS::EC2::Instance
+    DependsOn: cuasPublicRoute
+    Properties:
+      ImageId: ami-04b4f1a9cf54c11d0
+      InstanceType: t2.micro
+      KeyName: vockey
+      SubnetId: !Ref cuasRedPublica
+      SecurityGroupIds:
+        - !Ref cuasUbuntuClient2SG
+      UserData:
+        Fn::Base64: |
+          #!/bin/bash
+          apt-get update -y
+          apt-get install -y curl
+      Tags:
+        - Key: Name
+          Value: cuasUbuntuCliente2
+
+  # 18. Instancia EC2 Windows en la subred publica. AMI funciona en us-east-1a
   cuasWin2025:
     Type: AWS::EC2::Instance
     DependsOn: cuasPublicRoute
@@ -180,7 +227,7 @@ Resources:
         - Key: Name
           Value: cuasWin2025
 
-  # 17. Instancia EC2 Ubuntu en la subred privada
+  # 19. Instancia EC2 Ubuntu en la subred privada
   cuasUbuntu:
     Type: AWS::EC2::Instance
     DependsOn:
@@ -213,3 +260,6 @@ Outputs:
   UbuntuInstanceId:
     Description: ID de la instancia Ubuntu
     Value: !Ref cuasUbuntu
+  UbuntuCliente2InstanceId:
+    Description: ID de la instancia Ubuntu cliente2
+    Value: !Ref cuasUbuntuCliente2
