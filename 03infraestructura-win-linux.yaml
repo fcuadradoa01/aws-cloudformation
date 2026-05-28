@@ -4,6 +4,11 @@ Description: >
   dos instancias EC2 (Windows (subred publica) y Ubuntu (subred privada)),
   Internet Gateway, tabla de rutas y grupos de seguridad.
 
+Parameters:
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: us-east-1a
+
 Resources:
   # 1. VPC principal
   cuasVPC:
@@ -38,7 +43,7 @@ Resources:
     Properties:
       VpcId: !Ref cuasVPC
       CidrBlock: 10.30.10.0/24
-      AvailabilityZone: us-east-1a
+      AvailabilityZone: !Ref AvailabilityZone
       MapPublicIpOnLaunch: true
       Tags:
         - Key: Name
@@ -69,19 +74,60 @@ Resources:
       SubnetId: !Ref cuasRedPublica
       RouteTableId: !Ref cuasPublicRouteTable
 
-  # 8. Subred privada
+  # 8. Elastic IP para el NAT Gateway
+  cuasEIPForNat:
+    Type: AWS::EC2::EIP
+    DependsOn: cuasAttachIGW
+    Properties:
+      Domain: vpc
+
+  # 9. NAT Gateway para la subred privada
+  cuasNatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt cuasEIPForNat.AllocationId
+      SubnetId: !Ref cuasRedPublica
+      Tags:
+        - Key: Name
+          Value: cuasNatGateway
+
+  # 10. Subred privada
   cuasRedPrivada:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref cuasVPC
       CidrBlock: 10.30.20.0/24
-      AvailabilityZone: us-east-1a
+      AvailabilityZone: !Ref AvailabilityZone
       MapPublicIpOnLaunch: false
       Tags:
         - Key: Name
           Value: cuasRedPrivada
 
-  # 9. Grupo de seguridad para la instancia Windows (permite RDP y ping)
+  # 11. Tabla de rutas para la subred privada
+  cuasPrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref cuasVPC
+      Tags:
+        - Key: Name
+          Value: cuasPrivateRouteTable
+
+  # 12. Ruta por defecto hacia el NAT Gateway
+  cuasPrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref cuasPrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref cuasNatGateway
+
+  # 13. Asociación de la tabla de rutas privada a la subred privada
+  cuasPrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref cuasRedPrivada
+      RouteTableId: !Ref cuasPrivateRouteTable
+
+  # 14. Grupo de seguridad para la instancia Windows (permite RDP y ping)
   cuasWinSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -100,7 +146,7 @@ Resources:
         - Key: Name
           Value: cuasWinSG
 
-  # 10. Grupo de seguridad para la instancia Ubuntu (permite SSH solo desde la subred pública)
+  # 15. Grupo de seguridad para la instancia Ubuntu (permite SSH solo desde la subred pública)
   cuasUbuntuSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -119,9 +165,10 @@ Resources:
         - Key: Name
           Value: cuasUbuntuSG
 
-  # 11. Instancia EC2 Windows en la subred publica. AMI funciona en us-east-1a
+  # 16. Instancia EC2 Windows en la subred publica. AMI funciona en us-east-1a
   cuasWin2025:
     Type: AWS::EC2::Instance
+    DependsOn: cuasPublicRoute
     Properties:
       ImageId: ami-06d4892cdcf1d2cf7
       InstanceType: t3.small
@@ -133,9 +180,12 @@ Resources:
         - Key: Name
           Value: cuasWin2025
 
-  # 12. Instancia EC2 Ubuntu en la subred privada
+  # 17. Instancia EC2 Ubuntu en la subred privada
   cuasUbuntu:
     Type: AWS::EC2::Instance
+    DependsOn:
+      - cuasPrivateRoute
+      - cuasPrivateSubnetRouteTableAssociation
     Properties:
       ImageId: ami-04b4f1a9cf54c11d0
       InstanceType: t2.micro
