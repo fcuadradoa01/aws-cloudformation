@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: 
+Description: >
   - Subred pública 10.10.10.0/24 
   - EC2 Ubuntu 24.04 con Apache
 
@@ -72,12 +72,15 @@ Resources:
   UbuntuInstance:
     Type: AWS::EC2::Instance
     Properties:
-      InstanceType: t3.micro
+      InstanceType: t2.micro
       SubnetId: !Ref PublicSubnet
       SecurityGroupIds:
         - !Ref SecurityGroup
       KeyName: vockey
       ImageId: ami-04b4f1a9cf54c11d0
+      Tags:
+        - Key: Name
+          Value: servidorweb
       UserData:
         Fn::Base64: |
           #!/bin/bash
